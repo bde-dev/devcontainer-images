@@ -1,5 +1,5 @@
 {
-  "name": "dev-env-name",
+  "name": "devcontainer-images",
   "build": {
     "context": "..",
     "dockerfile": "Dockerfile"
