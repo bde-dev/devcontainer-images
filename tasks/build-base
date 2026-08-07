@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Rung 2: build the base image locally"
+set -euo pipefail
+docker build -f base/Dockerfile -t devcontainer-base:local .

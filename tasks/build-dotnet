@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Rung 2: build the dotnet flavor against the LOCAL base"
+#MISE depends=["build-base"]
+set -euo pipefail
+docker build -f dotnet/Dockerfile --build-arg BASE=devcontainer-base:local -t devcontainer-dotnet:local .

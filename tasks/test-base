@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Rung 2: assert the belt is installed and runnable as vscode"
+#MISE depends=["build-base"]
+set -euo pipefail
+docker run --rm devcontainer-base:local bash -c '
+  set -e
+  mise ls
+  for t in rg bat fd fzf gh nvim lsd; do mise exec -- "$t" --version >/dev/null && echo "ok: $t"; done
+'

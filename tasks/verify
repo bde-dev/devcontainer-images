@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Rungs 1-2: full local loop for both images"
+#MISE depends=["test-config", "test-base", "test-dotnet"]
+echo "verify: all rungs passed"

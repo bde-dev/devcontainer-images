@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Rung 1: resolve every tool@version in each image config (no docker build)"
+set -euo pipefail
+for d in base dotnet; do
+  echo "== resolving $d/mise.toml =="
+  ( export MISE_DATA_DIR="$(mktemp -d)"; mise -C "$d" install )
+done

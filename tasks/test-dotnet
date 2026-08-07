@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Rung 2: assert belt inherited and both SDKs present"
+#MISE depends=["build-dotnet"]
+set -euo pipefail
+docker run --rm devcontainer-dotnet:local bash -c '
+  set -e
+  mise ls
+  mise exec -- dotnet --list-sdks
+  mise exec -- rg --version >/dev/null && echo "ok: belt inherited from base"
+'
