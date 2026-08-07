@@ -1,0 +1,13 @@
+[tools]
+bat = "0.26.0"
+ripgrep = "15.2.0"
+fd = "10.3.0"
+fzf = "0.66.1"
+gh = "2.83.0"
+neovim = "0.11.4"
+lsd = "1.2.0"
+
+[settings]
+experimental = true
+lockfile = true
+pin = true

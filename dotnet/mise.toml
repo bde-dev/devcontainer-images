@@ -1,0 +1,8 @@
+[tools]
+# Keep .NET 8 SDK until old workloads can upgrade
+dotnet = ["8.0.423", "10.0.302"]
+
+[settings]
+experimental = true
+lockfile = true
+pin = true
