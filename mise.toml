@@ -1,4 +1,6 @@
 [tools]
 
 [settings]
+experimental = true
+lockfile = true
 pin = true
