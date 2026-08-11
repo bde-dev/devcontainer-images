@@ -2,11 +2,17 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 COPY --from=ghcr.io/jdx/mise:2026.8.2 /usr/local/bin/mise /usr/local/bin/
 
-COPY base/mise.toml /etc/mise/conf.d/10-base.toml
+ENV MISE_DATA_DIR=/mise \
+    MISE_CONFIG_DIR=/mise \
+    MISE_CACHE_DIR=/mise/cache \
+    MISE_TRUSTED_CONFIG_PATHS=/mise \
+    PATH=/mise/shims:$PATH
+
+COPY base/mise.toml /mise/config.toml
+COPY base/mise.lock /mise/mise.lock
+
+RUN chown -R vscode:vscode /mise
 
 USER vscode
 
-RUN /usr/local/bin/mise install
-
-RUN echo 'eval "$(mise activate bash)"' >> /home/vscode/.bashrc && \
-  echo 'eval "$(mise activate zsh)"' >> /home/vscode/.zshrc
+RUN mise install

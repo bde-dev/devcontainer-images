@@ -1,6 +1,9 @@
-ARG BASE=harbor.bde-dev.net/devcontainers/base
+ARG BASE=harbor.bde-dev.net/devcontainer-images/base
 FROM ${BASE}
 
-COPY dotnet/mise.toml /etc/mise/conf.d/20-dotnet.toml
+COPY --chown=vscode:vscode dotnet/mise.toml /mise/conf.d/20-dotnet.toml
+COPY --chown=vscode:vscode dotnet/mise.lock /mise/dotnet.lock.tmp
 
-RUN /usr/local/bin/mise install
+RUN cat /mise/dotnet.lock.tmp >> /mise/mise.lock \
+ && rm /mise/dotnet.lock.tmp \
+ && mise install
