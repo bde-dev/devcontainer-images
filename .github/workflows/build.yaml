@@ -32,7 +32,7 @@ jobs:
           password: ${{ secrets.HARBOR_ROBOT_SECRET }}
 
       - name: Build and push base
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: base/Dockerfile
@@ -43,7 +43,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push dotnet
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: dotnet/Dockerfile
