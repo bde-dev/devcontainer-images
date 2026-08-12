@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "branchConcurrentLimit": 0,
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "addLabels": ["docker"]
+    },
+    {
+      "matchManagers": ["mise"],
+      "addLabels": ["mise"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["ci"]
+    }
+  ]
+}
