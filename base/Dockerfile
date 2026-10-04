@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
-COPY --from=ghcr.io/jdx/mise:2026.10.0 /usr/local/bin/mise /usr/local/bin/
+COPY --from=ghcr.io/jdx/mise:2026.10.1 /usr/local/bin/mise /usr/local/bin/
 
 ENV MISE_DATA_DIR=/mise \
     MISE_CONFIG_DIR=/mise \
