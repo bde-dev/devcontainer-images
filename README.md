@@ -32,7 +32,7 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
 
 ## Publishing
 
-`build.yaml` runs on a push to `main` that touches an image directory, or by hand. It
+`build.yaml` runs by hand (`workflow_dispatch`). It
 builds both flavours with an SBOM, tags them with an immutable date (`YYYY.M.DD`), pushes
 them to the Harbor `devcontainer-images` project, and cuts a GitHub release with
 generated notes. The Harbor robot account lives in Actions secrets.
@@ -40,7 +40,8 @@ generated notes. The Harbor robot account lives in Actions secrets.
 Publication depends on GitHub-hosted runners reaching Harbor through its Cloudflare
 tunnel, which they cannot today (the registry answers 530 to the login), so the workflow
 fails at the login step and no image has been published yet. Until that path works, the
-local rung-2 images are the images, and the weekly schedule stays disabled.
+local rung-2 images are the images, and the push and schedule triggers stay off so the
+workflow only runs when someone asks it to.
 
 The Harbor project is private. Nothing here needs it to be public: the Dockerfiles and
 lockfiles are the reproducible artefact.

@@ -1,11 +1,10 @@
 name: build
 
 on:
-  push:
-    branches: [main]
-    paths: ["base/**", "dotnet/**", ".github/workflows/build.yaml"]
-  #  schedule:
-  #    - cron: "0 6 * * 1"
+  # Manual only: GitHub-hosted runners cannot reach Harbor through the Cloudflare
+  # tunnel (login answers 530), so push and schedule triggers only produce failures.
+  # Restore push (branches: [main], paths: base/**, dotnet/**, this file) and the
+  # weekly schedule once a runner can reach the registry.
   workflow_dispatch:
 
 env:
