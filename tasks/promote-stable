@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#MISE description="Rung 3: point the moving stable tag at a verified date tag, by digest (usage: promote-stable [TAG])"
+#MISE depends=["verify"]
+# `stable` is a moving tag on the single build line; consumers pin it by digest. Promotion
+# re-tags the existing manifest index (attestations included) with one registry-level
+# manifest GET and one PUT, which the push-scoped robot is allowed to do. Nothing is
+# rebuilt and no blob is touched: tools that re-verify every blob (`imagetools create`,
+# `skopeo copy`) fan out dozens of concurrent HEADs and have tripped Harbor core's
+# upstream dials under that burst.
+set -euo pipefail
+
+REGISTRY=harbor.bde-dev.net
+PROJECT=devcontainer-images
+TAG=${1:-$(date +%Y.%-m.%d)}
+ACCEPT='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+
+: "${HARBOR_ROBOT_USERNAME:?set HARBOR_ROBOT_USERNAME}"
+: "${HARBOR_ROBOT_SECRET:?set HARBOR_ROBOT_SECRET}"
+case "$HARBOR_ROBOT_USERNAME" in
+  robot\$*) ;;
+  *) echo "promote-stable: refusing — $HARBOR_ROBOT_USERNAME is not a robot account" >&2; exit 1 ;;
+esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+for repo in base dotnet; do
+  name="$PROJECT/$repo"
+  token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
+    "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$name:pull,push" | jq -r .token)
+  curl -fsS -H "Authorization: Bearer $token" -H "Accept: $ACCEPT" \
+    -D "$tmp/$repo.headers" -o "$tmp/$repo.manifest" "https://$REGISTRY/v2/$name/manifests/$TAG"
+  ctype=$(awk 'tolower($1)=="content-type:"{print $2}' "$tmp/$repo.headers" | tr -d '\r')
+  digest="sha256:$(sha256sum "$tmp/$repo.manifest" | cut -d' ' -f1)"
+  served=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' "$tmp/$repo.headers" | tr -d '\r')
+  [ -z "$served" ] || [ "$served" = "$digest" ] || { echo "promote-stable: digest mismatch for $name:$TAG ($served vs $digest)" >&2; exit 1; }
+  result=$(curl -fsS -X PUT -H "Authorization: Bearer $token" -H "Content-Type: $ctype" \
+    --data-binary "@$tmp/$repo.manifest" -D - -o /dev/null "https://$REGISTRY/v2/$name/manifests/stable" \
+    | awk 'tolower($1)=="docker-content-digest:"{print $2}' | tr -d '\r')
+  [ "$result" = "$digest" ] || { echo "promote-stable: PUT returned $result, expected $digest" >&2; exit 1; }
+  echo "promote-stable: $REGISTRY/$name:stable -> $digest ($TAG)"
+done

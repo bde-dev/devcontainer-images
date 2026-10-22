@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 #MISE description="Rung 1: resolve every tool@version in each image config (no docker build)"
+# Hermetic: a throwaway MISE_CONFIG_DIR keeps the host's global mise config (and its
+# tools) out of the resolution, so only the image's own mise.toml + mise.lock is tested.
+# The scratch dir lives on disk, not /tmp: the SDK extractions run to gigabytes and a
+# tmpfs /tmp fills up. It is removed on exit, pass or fail.
 set -euo pipefail
+scratch="$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}" devcontainer-images-test.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT
 for d in base dotnet; do
   echo "== resolving $d/mise.toml =="
-  ( export MISE_DATA_DIR="$(mktemp -d)"; mise -C "$d" install )
+  (
+    export MISE_CONFIG_DIR="$scratch/$d/config" MISE_DATA_DIR="$scratch/$d/data" MISE_CACHE_DIR="$scratch/$d/cache"
+    export MISE_IGNORED_CONFIG_PATHS= MISE_TRUSTED_CONFIG_PATHS="$PWD/$d"
+    mise -C "$d" install
+  )
 done

@@ -29,19 +29,31 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
   and `devcontainer-dotnet:local`; `test-base` and `test-dotnet` run each image as the
   `vscode` user and assert the belt and SDKs are present and runnable.
 - `verify` runs the whole ladder.
+- **Rung 3, publish:** see Publishing below.
 
 ## Publishing
 
-`build.yaml` runs by hand (`workflow_dispatch`). It
-builds both flavours with an SBOM, tags them with an immutable date (`YYYY.M.DD`), pushes
-them to the Harbor `devcontainer-images` project, and cuts a GitHub release with
-generated notes. The Harbor robot account lives in Actions secrets.
+Images are published to the private Harbor `devcontainer-images` project as immutable
+date tags (`YYYY.M.DD`, no leading zero on the month) with an SBOM attestation, and a
+moving `stable` tag points at the most recent date tag that passed the verification
+ladder. Consumers pin `stable` by digest. Pushes authenticate as the project-scoped robot
+account only, never an admin user.
 
-Publication depends on GitHub-hosted runners reaching Harbor through its Cloudflare
-tunnel, which they cannot today (the registry answers 530 to the login), so the workflow
-fails at the login step and no image has been published yet. Until that path works, the
-local rung-2 images are the images, and the push and schedule triggers stay off so the
-workflow only runs when someone asks it to.
+Pushes have to originate inside the LAN. Harbor is fronted by a Cloudflare tunnel whose
+per-request body cap sits far below an image layer, so anything outside the LAN can pull,
+browse and call the API but cannot push. That gives two publishers:
+
+- **Rung 3, workstation:** `publish` runs the ladder, then builds both flavours with
+  `buildx` on a `docker-container` builder (the default driver cannot push attestations)
+  and pushes the date tags. `promote-stable [TAG]` re-tags a verified date tag as
+  `stable` by digest, so nothing is rebuilt and the attestations ride along. Both tasks
+  read `HARBOR_ROBOT_USERNAME` / `HARBOR_ROBOT_SECRET` from the environment (the secret is
+  the Key Vault entry `harbor-gha-robot-creds`), refuse any non-robot username, refuse to
+  run if the registry does not resolve to a private address, and log in under a throwaway
+  `DOCKER_CONFIG` so the workstation's own registry login is left alone.
+- **CI, `build.yaml`:** the same build on a runner, plus a GitHub release with generated
+  notes. It runs by hand only until an in-LAN runner exists; GitHub-hosted runners sit
+  outside the LAN and fail at the login step.
 
 The Harbor project is private. Nothing here needs it to be public: the Dockerfiles and
 lockfiles are the reproducible artefact.
