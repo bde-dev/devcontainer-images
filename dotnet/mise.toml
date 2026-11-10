@@ -1,6 +1,6 @@
 [tools]
 # Keep .NET 8 SDK until old workloads can upgrade
-dotnet = ["8.0.423", "10.0.302"]
+dotnet = ["8.0.427", "10.0.403"]
 
 [settings]
 experimental = true
