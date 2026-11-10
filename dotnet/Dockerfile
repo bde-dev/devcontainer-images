@@ -6,4 +6,4 @@ COPY --chown=vscode:vscode dotnet/mise.lock /mise/dotnet.lock.tmp
 
 RUN cat /mise/dotnet.lock.tmp >> /mise/mise.lock \
  && rm /mise/dotnet.lock.tmp \
- && mise install
+ && mise install --jobs 1
