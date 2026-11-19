@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#MISE description="Rung 3: point the moving stable tag at a verified date tag, by digest (usage: promote-stable [TAG])"
+#MISE description="Rung 3: point the moving stable tag at a published version, by digest (usage: promote-stable <version>)"
 #MISE depends=["verify"]
-# `stable` is a moving tag on the single build line; consumers pin it by digest. Promotion
+# `stable` is a moving tag on the single build line. Promotion
 # re-tags the existing manifest index (attestations included) with one registry-level
 # manifest GET and one PUT, which the push-scoped robot is allowed to do. Nothing is
 # rebuilt and no blob is touched: tools that re-verify every blob (`imagetools create`,
@@ -11,7 +11,7 @@ set -euo pipefail
 
 REGISTRY=harbor.bde-dev.net
 PROJECT=devcontainer-images
-TAG=${1:-$(date +%Y.%-m.%d)}
+TAG=${1:?usage: promote-stable <version>}
 ACCEPT='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
 
 : "${HARBOR_ROBOT_USERNAME:?set HARBOR_ROBOT_USERNAME}"

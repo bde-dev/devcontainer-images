@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-#MISE description="Rung 3: build both images with SBOM attestation and push immutable date tags to Harbor (in-LAN only)"
+#MISE description="Rung 3: build both images with SBOM attestation and push the next SemVer tag to Harbor (in-LAN only)"
 #MISE depends=["verify"]
+#USAGE arg "<bump>" help="major, minor or patch: what this release changes for a consumer (see README, Publishing)"
 # Publishes from the workstation. Pushes must originate inside the LAN: the Cloudflare
 # tunnel in front of Harbor caps request bodies well below an image layer, so this task
 # refuses to run unless the registry resolves to a private address. Credentials are the
@@ -11,7 +12,12 @@ set -euo pipefail
 REGISTRY=harbor.bde-dev.net
 PROJECT=devcontainer-images
 BUILDER=devcontainer-images
-TAG=${TAG:-$(date +%Y.%-m.%d)}
+SOURCE=https://github.com/bde-dev/devcontainer-images
+bump=${usage_bump:-${1:-}}
+case "$bump" in
+  major|minor|patch) ;;
+  *) echo "publish: say what this release changes — publish <major|minor|patch>" >&2; exit 1 ;;
+esac
 
 : "${HARBOR_ROBOT_USERNAME:?set HARBOR_ROBOT_USERNAME (robot\$devcontainer-images+gha)}"
 : "${HARBOR_ROBOT_SECRET:?set HARBOR_ROBOT_SECRET (AKV secret harbor-gha-robot-creds)}"
@@ -44,16 +50,30 @@ src=${DOCKER_CONFIG:-$HOME/.docker}
 export DOCKER_CONFIG="$tmp"
 printf '%s' "$HARBOR_ROBOT_SECRET" | docker login "$REGISTRY" -u "$HARBOR_ROBOT_USERNAME" --password-stdin
 
-BASE_REF="$REGISTRY/$PROJECT/base:$TAG"
-DOTNET_REF="$REGISTRY/$PROJECT/dotnet:$TAG"
+# Both flavours release as one version: the next one after the highest tag either holds.
+: > "$tmp/tags"
+for repo in base dotnet; do
+  token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
+    "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$PROJECT/$repo:pull" | jq -r .token)
+  curl -fsS -H "Authorization: Bearer $token" \
+    "https://$REGISTRY/v2/$PROJECT/$repo/tags/list?n=1000" | jq -r '.tags[]?' >> "$tmp/tags"
+done
+VERSION=$(scripts/next-version "$bump" < "$tmp/tags")
 
-echo "publish: $BASE_REF"
+BASE_REF="$REGISTRY/$PROJECT/base:$VERSION"
+DOTNET_REF="$REGISTRY/$PROJECT/dotnet:$VERSION"
+
+echo "publish: $BASE_REF ($bump)"
 docker buildx build --builder "$BUILDER" -f base/Dockerfile \
+  --label "org.opencontainers.image.source=$SOURCE" \
+  --label "org.opencontainers.image.version=$VERSION" \
   --sbom=true --provenance=mode=min -t "$BASE_REF" --push .
 
-echo "publish: $DOTNET_REF"
+echo "publish: $DOTNET_REF ($bump)"
 docker buildx build --builder "$BUILDER" -f dotnet/Dockerfile \
   --build-arg "BASE=$BASE_REF" \
+  --label "org.opencontainers.image.source=$SOURCE" \
+  --label "org.opencontainers.image.version=$VERSION" \
   --sbom=true --provenance=mode=min -t "$DOTNET_REF" --push .
 
-echo "publish: pushed $TAG"
+echo "publish: pushed $VERSION"

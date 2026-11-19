@@ -6,6 +6,12 @@ on:
   # Restore push (branches: [main], paths: base/**, dotnet/**, this file) and the
   # weekly schedule once a runner can reach the registry.
   workflow_dispatch:
+    inputs:
+      bump:
+        description: What this release changes for a consumer (see README, Publishing)
+        required: true
+        type: choice
+        options: [patch, minor, major]
 
 env:
   REGISTRY: harbor.bde-dev.net
@@ -19,9 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Compute immutable date tag (YYYY.M.DD)
-        run: echo "TAG=$(date +%Y.%-m.%d)" >> "$GITHUB_ENV"
-
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -30,6 +33,20 @@ jobs:
           username: ${{ vars.HARBOR_ROBOT_USERNAME }}
           password: ${{ secrets.HARBOR_ROBOT_SECRET }}
 
+      - name: Compute the next version from the published tags
+        env:
+          BUMP: ${{ inputs.bump }}
+          HARBOR_ROBOT_USERNAME: ${{ vars.HARBOR_ROBOT_USERNAME }}
+          HARBOR_ROBOT_SECRET: ${{ secrets.HARBOR_ROBOT_SECRET }}
+        run: |
+          for repo in base dotnet; do
+            token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
+              "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$PROJECT/$repo:pull" | jq -r .token)
+            curl -fsS -H "Authorization: Bearer $token" \
+              "https://$REGISTRY/v2/$PROJECT/$repo/tags/list?n=1000" | jq -r '.tags[]?'
+          done > tags
+          echo "TAG=$(scripts/next-version "$BUMP" < tags)" >> "$GITHUB_ENV"
+
       - name: Build and push base
         uses: docker/build-push-action@v7
         with:
@@ -37,6 +54,9 @@ jobs:
           file: base/Dockerfile
           push: true
           sbom: true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.TAG }}
           tags: ${{ env.REGISTRY }}/${{ env.PROJECT }}/base:${{ env.TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -50,6 +70,9 @@ jobs:
           sbom: true
           build-args: |
             BASE=${{ env.REGISTRY }}/${{ env.PROJECT }}/base:${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.TAG }}
           tags: ${{ env.REGISTRY }}/${{ env.PROJECT }}/dotnet:${{ env.TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -59,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${TAG}" > /dev/null 2>&1; then
-            echo "release ${TAG} already exists (same-day rebuild) — skipping"
+            echo "release ${TAG} already exists — skipping"
           else
             gh release create "${TAG}" --title "${TAG}" --generate-notes
           fi

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#MISE description="Rung 1: the version publish would pick, checked against known tag sets (no docker build)"
+set -euo pipefail
+
+check() {
+  local want=$1 bump=$2 got
+  shift 2
+  got=$(printf '%s\n' "$@" | scripts/next-version "$bump")
+  [ "$got" = "$want" ] || { echo "test-version: $bump after [$*] gave $got, expected $want" >&2; exit 1; }
+}
+
+# A date tag and `stable` are not versions, so a registry holding only those starts at 1.0.0.
+check 1.0.0 patch stable 2026.11.10 2026.11.10.1
+check 1.0.0 major
+check 1.0.1 patch 1.0.0 stable 2026.11.10
+check 1.1.0 minor 1.0.9 1.0.10
+check 2.0.0 major 1.9.3
+# Parts compare as numbers: 1.10.0 is newer than 1.9.0.
+check 1.10.1 patch 1.9.0 1.10.0
+
+if printf '1.0.0\n' | scripts/next-version sideways 2>/dev/null; then
+  echo "test-version: an unknown bump level was accepted" >&2
+  exit 1
+fi
+
+echo "test-version: ok"

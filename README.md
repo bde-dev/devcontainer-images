@@ -34,19 +34,30 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
 ## Publishing
 
 Images are published to the private Harbor `devcontainer-images` project as immutable
-date tags (`YYYY.M.DD`, no leading zero on the month) with an SBOM attestation, and a
-moving `stable` tag points at the most recent date tag that passed the verification
-ladder. Consumers pin `stable` by digest. Pushes authenticate as the project-scoped robot
-account only, never an admin user.
+SemVer tags (`MAJOR.MINOR.PATCH`) with an SBOM attestation. Both flavours release as one
+version, and a moving `stable` tag points at the most recent version that passed the
+verification ladder. Consumers pin a version tag, which Renovate keeps current. Pushes
+authenticate as the project-scoped robot account only, never an admin user.
+
+The bump level says what a release changes for a consumer, so a pin can take a minor or a
+patch without thought and a major with a look:
+
+- **major:** something a consumer may rely on is gone or behaves differently: a tool or an
+  SDK removed, a new base OS release, a changed user or path.
+- **minor:** something is added (a tool, an SDK) and nothing is removed.
+- **patch:** the same contents at newer patch levels.
+
+`publish` takes the level and works out the number: the next one after the highest version
+either flavour already holds in the registry.
 
 Pushes have to originate inside the LAN. Harbor is fronted by a Cloudflare tunnel whose
 per-request body cap sits far below an image layer, so anything outside the LAN can pull,
 browse and call the API but cannot push. That gives two publishers:
 
-- **Rung 3, workstation:** `publish` runs the ladder, then builds both flavours with
-  `buildx` on a `docker-container` builder (the default driver cannot push attestations)
-  and pushes the date tags. `promote-stable [TAG]` re-tags a verified date tag as
-  `stable` by digest, so nothing is rebuilt and the attestations ride along. Both tasks
+- **Rung 3, workstation:** `publish <major|minor|patch>` runs the ladder, then builds both
+  flavours with `buildx` on a `docker-container` builder (the default driver cannot push
+  attestations) and pushes the version. `promote-stable <version>` re-tags a published
+  version as `stable` by digest, so nothing is rebuilt and the attestations ride along. Both tasks
   read `HARBOR_ROBOT_USERNAME` / `HARBOR_ROBOT_SECRET` from the environment (the secret is
   the Key Vault entry `harbor-gha-robot-creds`), refuse any non-robot username, refuse to
   run if the registry does not resolve to a private address, and log in under a throwaway
