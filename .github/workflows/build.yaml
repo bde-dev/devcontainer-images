@@ -1,13 +1,11 @@
 name: build
 
 on:
-  # Two ways in. By hand, a release names the image and what the release changes for a
-  # consumer. On the weekly schedule it covers every changed image and is always a patch,
-  # so a week of merged dependency bumps goes out as one version and a minor or a major
-  # stays a deliberate act. `changed` is every image whose own directory has changed
-  # since its last release; a commit that touches no image has nothing to release.
   schedule:
-    - cron: "17 4 * * 1" # Monday, after the week's dependency merges
+    - cron: "17 4 * * 1"
+  # A release is a deliberate act: it names the image and what the release changes for a
+  # consumer. `changed` covers every image whose own directory has changed since its
+  # last release; a commit that touches no image has nothing to release.
   workflow_dispatch:
     inputs:
       target:
@@ -38,8 +36,7 @@ jobs:
       images: ${{ steps.targets.outputs.images }}
     steps:
       # A release tag marks the commit that was built, and the next release measures
-      # change from it, so releases come from the default branch only. A scheduled run is
-      # always on the default branch, so only a run by hand can be anywhere else.
+      # change from it, so releases come from the default branch only.
       - name: Releases are cut from the default branch
         if: github.event_name == 'workflow_dispatch'
         env:
