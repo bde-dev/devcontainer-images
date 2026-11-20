@@ -114,7 +114,11 @@ publishers:
 
 - **CI, `build.yaml`:** run by hand on the default branch with the image (or `changed`,
   for every image whose directory changed since its last release), the bump level and
-  the refresh option. Images release side by side on GitHub-hosted runners, each with a
+  the refresh option. It also runs on a weekly schedule, which releases every changed
+  image as a patch, so merged dependency bumps reach consumers as one version a week
+  with nobody pressing a button. The schedule never cuts a minor or a major: a change
+  that needs one is released by hand before the week's run picks it up as a patch.
+  Images release side by side on GitHub-hosted runners, each with a
   GitHub release and generated notes, and one release of an image runs at a time. The
   runner reaches Harbor through the tunnel's TCP route, opened by the `harbor-route`
   action, which admits only an Access service token.
