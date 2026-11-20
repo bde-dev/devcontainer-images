@@ -31,7 +31,7 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
   pick, and which images a release covers. `test-pins` checks that every image names the
   version of what it is built on, and that the mise version CI runs can be read from `base`.
   `test-workflows` checks that no workflow a pull request can trigger reaches a secret, a
-  registry login or the publish route (see Pull requests).
+  registry login, the publish route or a write token (see Pull requests).
 - **Rung 2, local images:** `build-base` and `build-dotnet` build `devcontainer-base:local`
   and `devcontainer-dotnet:local`; `test-base` and `test-dotnet` run each image as the
   `vscode` user and assert the belt and SDKs are present and runnable. Here a flavour is
@@ -59,12 +59,21 @@ same tree, not on the version it pins, and every other layer comes from a public
 
 A pull request runs code its author wrote, so a workflow it can trigger holds a read-only
 token and nothing else: no secret, no registry login, no route to the registry, nothing that
-pushes an image. `test-workflows` enforces that on every `verify`: it reads each workflow's
-`on:` block and, for any with a trigger a pull request reaches (`pull_request` and its
-variants, `issue_comment`, `workflow_run`, `merge_group`), fails on a line that names a
-secret, the publish route, a registry login or an image push. It reads text, so a comment
-that names one fails as well, and a workflow whose triggers it cannot find is refused. The
-checker is itself tried against fixture workflows on every run.
+pushes an image. `test-workflows` checks that on every `verify`. It reads each workflow's
+`on:` block, whatever shape the block takes, and passes a workflow without further reading
+only when its triggers are positively read as nothing but `workflow_dispatch` and `schedule`,
+events a pull request cannot fire. Every other workflow is scanned, whether it names
+`pull_request` or one of its variants, `issue_comment`, `workflow_run`, `merge_group`, `push`
+or a trigger the reader cannot classify, and fails on a line that names a secret, the
+publish route, a registry login, an image push or a write token (a write token can cut a
+release or push a tag without naming a secret). It reads text, so a comment that names one
+fails as well, and a workflow with no single `on:` key is refused. The checker is itself
+tried against fixture workflows of every `on:` shape on every run.
+
+The check catches a mistake in a workflow. It lives in the tree a pull request can change,
+so a pull request that edits the check or the workflow it guards changes what is run: it is
+not a security boundary. Keeping a pull request away from secrets and write access is the
+job of the repository's settings and of review; this check is a safety net on top of them.
 
 ## Publishing
 

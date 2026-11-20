@@ -1,31 +1,90 @@
 #!/usr/bin/env bash
-#MISE description="Rung 1: no workflow a pull request can trigger can reach a secret, a registry login or the publish route (no docker build; optionally the directory to scan)"
+#MISE description="Rung 1: no workflow a pull request can trigger can reach a secret, a registry login, the publish route or a write token (no docker build; optionally the directory to scan)"
 # A pull request runs code its author wrote, so a workflow it can trigger must hold nothing
-# that can publish an image. This reads each workflow's `on:` block and, for every one with
-# a trigger a pull request reaches, fails on any line that names a secret, the publish
-# route, a registry login or an image push. It reads text, so a comment that names one
-# fails too: better a reworded comment than a credential that slipped past a parser.
+# that can publish an image. This reads each workflow's `on:` block and fails any workflow
+# that is not positively read as triggered by nothing but `workflow_dispatch` and `schedule`
+# (events a pull request cannot fire) when a line of it names a secret, the publish route, a
+# registry login, an image push or a write token. Every other workflow is scanned, so a
+# trigger this reader does not understand is treated as reachable, never as safe: any
+# `pull_request` variant, `issue_comment`, `workflow_run`, `merge_group`, `push`, and any
+# `on:` shape it cannot classify with certainty. A write token matters because it can cut a
+# release or push a tag without naming a secret.
 #
-# The triggers a pull request reaches are `pull_request` and its variants (`_target`,
-# `_review`, `_review_comment`), `issue_comment` (a comment on a pull request fires it),
-# `workflow_run` (it follows another workflow, including one a pull request started) and
-# `merge_group` (it runs the merge of queued pull requests).
-#
-# The checker is tried first on fixtures, so a pattern that stopped matching fails here
-# before it can let a real workflow through.
+# It reads text, so a comment that names one of these fails too: better a reworded comment
+# than a credential that slipped past a parser. The checker is tried first on fixtures, so a
+# pattern that stopped matching, or an `on:` shape it misreads, fails here before it can let
+# a real workflow through.
 set -euo pipefail
 
 on_key='^("on"|'"'"'on'"'"'|on)[ \t]*:'
-reachable='pull_request|issue_comment|workflow_run|merge_group'
 
-# The workflow's `on:` block, comments removed. Fails when the file has none, so a
-# workflow whose triggers cannot be read is refused, never assumed safe.
-triggers() {
+# Prints `safe` when the workflow's `on:` block is positively read as only workflow_dispatch
+# and schedule, `scan` for anything else, and fails when the file has no single `on:` key
+# to read. Reads the scalar (`on: x`), single-line flow sequence (`on: [x, y]`), block
+# mapping and block list (including a list indented no further than `on:`) forms; a flow
+# mapping, a quoted event name, a tab in the indentation or anything else is `scan`.
+classify() {
   awk -v key="$on_key" '
-    $0 ~ key                  { in_on = 1; found = 1 }
-    !($0 ~ key) && /^[^ \t#]/ { in_on = 0 }
-    in_on                     { sub(/[ \t]*#.*/, ""); print }
-    END                       { exit !found }
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function allowed(e) { return e == "workflow_dispatch" || e == "schedule" }
+    function classify(s,   i, l, rest, nb, body, ind, m, w, t, k, kind, name, count, inner, nev, parts, j, p) {
+      rest = lines[s]
+      sub(/(^|[ \t])#.*/, "", rest)
+      sub(key, "", rest)
+      rest = trim(rest)
+      for (i = s + 1; i <= NR; i++) {
+        l = lines[i]
+        if (l ~ /^(---|\.\.\.)([ \t]|$)/) break
+        if (l !~ /^([ \t]|-([ \t]|$)|#|$)/) break
+        sub(/(^|[ \t])#.*/, "", l)
+        if (l ~ /^[ \t]*$/) continue
+        body[++nb] = l
+      }
+      if (rest != "") {
+        if (nb > 0) return "scan"
+        if (rest ~ /^[A-Za-z_]+$/) return allowed(rest) ? "safe" : "scan"
+        if (rest ~ /^\[[A-Za-z_, \t]*\]$/) {
+          inner = substr(rest, 2, length(rest) - 2)
+          nev = split(inner, parts, ",")
+          for (j = 1; j <= nev; j++) {
+            p = trim(parts[j])
+            if (p == "") continue
+            if (!allowed(p)) return "scan"
+            count++
+          }
+          return count > 0 ? "safe" : "scan"
+        }
+        return "scan"
+      }
+      if (nb == 0) return "scan"
+      m = -1
+      for (i = 1; i <= nb; i++) {
+        match(body[i], /^[ \t]*/)
+        w = substr(body[i], 1, RLENGTH)
+        if (w ~ /\t/) return "scan"
+        ind[i] = RLENGTH
+        if (m < 0 || RLENGTH < m) m = RLENGTH
+      }
+      for (i = 1; i <= nb; i++) {
+        if (ind[i] != m) continue
+        t = substr(body[i], m + 1)
+        if (kind == "map" && t ~ /^-([ \t]|$)/) continue
+        if (t ~ /^-[ \t]+[A-Za-z_]+[ \t]*$/) { k = "list"; name = t; sub(/^-[ \t]+/, "", name); name = trim(name) }
+        else if (t ~ /^[A-Za-z_]+[ \t]*:([ \t].*)?$/) { k = "map"; name = t; sub(/[ \t]*:.*$/, "", name) }
+        else return "scan"
+        if (kind != "" && kind != k) return "scan"
+        kind = k
+        if (!allowed(name)) return "scan"
+        count++
+      }
+      return count > 0 ? "safe" : "scan"
+    }
+    { sub(/\r$/, ""); lines[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) if (lines[i] ~ key) { n++; if (n == 1) first = i }
+      if (n == 0) exit 2
+      print (n == 1) ? classify(first) : "scan"
+    }
   ' "$1"
 }
 
@@ -34,28 +93,31 @@ labels=(
   "the publish route"
   "a registry login"
   "an image push"
+  "a write token"
 )
 patterns=(
   '\bsecrets\b'
   'harbor'
   'login-action|\b(docker|podman|buildah|skopeo|oras|crane|regctl|cosign|helm)\b.*\blogin\b'
-  'build-push-action|--push\b|\bpush:[ \t]*true|\b(docker|podman|buildah|skopeo|oras|crane|regctl)\b.*\bpush\b|\b(mise|tasks/).*\b(publish|promote-stable)\b'
+  'build-push-action|--push\b|\bpush:[[:space:]]*true|\b(docker|podman|buildah|skopeo|oras|crane|regctl)\b.*\bpush\b|\b(mise|tasks/).*\b(publish|promote-stable)\b'
+  ':[[:space:]]*["'"'"']?write(-all)?["'"'"']?[[:space:]]*([,}#].*)?$'
 )
 
-# Prints every offence in the workflows a pull request can trigger under a directory; fails if any.
+# Prints every offence in the workflows under a directory that are not positively
+# triggered by nothing but workflow_dispatch and schedule; fails if any.
 scan() {
-  local dir=$1 file trig hit i bad=0
+  local dir=$1 file verdict hit i bad=0
   for file in "$dir"/*.yaml "$dir"/*.yml; do
     [ -e "$file" ] || continue
-    if ! trig=$(triggers "$file"); then
-      echo "test-workflows: $file: no \`on:\` block to read its triggers from" >&2
+    if ! verdict=$(classify "$file"); then
+      echo "test-workflows: $file: no single \`on:\` key to read its triggers from" >&2
       bad=1
       continue
     fi
-    grep -Eq "$reachable" <<<"$trig" || continue
+    [ "$verdict" = safe ] && continue
     for i in "${!patterns[@]}"; do
       while IFS= read -r hit; do
-        echo "test-workflows: $file:$hit  <- a workflow a pull request can trigger names ${labels[$i]}" >&2
+        echo "test-workflows: $file:$hit  <- a workflow a pull request may be able to trigger names ${labels[$i]}" >&2
         bad=1
       done < <(grep -Ein -e "${patterns[$i]}" "$file" || true)
     done
@@ -74,6 +136,27 @@ fixture() {
   cat > "$dir/w.yaml"
   if scan "$dir" 2>/dev/null; then got=pass; else got=fail; fi
   [ "$got" = "$want" ] || { echo "test-workflows: $what: scan gave $got, expected $want" >&2; exit 1; }
+}
+
+# shellcheck disable=SC2016 # the `${{ }}` below is workflow text, not a shell expansion
+jobs_clean='jobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+# shellcheck disable=SC2016
+jobs_secret='jobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.TOKEN }}\n'
+# shape <what> <on block> [<the shape holding release triggers> [<the same, unconfirmable>]]
+# The text is printf %b, so `\n`, `\t` and `\r` write the characters. A <what> that starts
+# with CRLF writes the whole file with CRLF line ends.
+shape() {
+  local what=$1 bad=$2 safe=${3:-} unsure=${4:-}
+  local eol=cat
+  case "$what" in CRLF*) eol="sed s/\$/\r/" ;; esac
+  fixture fail "$what, with a secret" < <(printf '%b%b' "$bad" "$jobs_secret" | $eol)
+  fixture pass "$what, clean" < <(printf '%b%b' "$bad" "$jobs_clean" | $eol)
+  if [ -n "$safe" ]; then
+    fixture pass "$what of release triggers, with a secret" < <(printf '%b%b' "$safe" "$jobs_secret" | $eol)
+  fi
+  if [ -n "$unsure" ]; then
+    fixture fail "$what of release triggers it cannot confirm, with a secret" < <(printf '%b%b' "$unsure" "$jobs_secret" | $eol)
+  fi
 }
 
 {
@@ -319,6 +402,109 @@ jobs:
     steps:
       - uses: bde-dev/harbor-route@v1
 YAML
+  # Every shape the `on:` key can take. A pull-request trigger in it fails when the workflow
+  # names a secret and passes when the workflow is clean. Where the reader can classify the
+  # shape, the same shape holding only release triggers passes even with a secret; where it
+  # cannot, that variant still fails, because an unclassified shape is scanned.
+  shape "a zero-indented list" 'on:\n- pull_request\n' 'on:\n- workflow_dispatch\n'
+  shape "an indented list" 'on:\n  - push\n  - pull_request\n' 'on:\n  - workflow_dispatch\n  - schedule\n'
+  shape "a flow sequence" 'on: [push, pull_request]\n' 'on: [workflow_dispatch, schedule]\n'
+  shape "a flow sequence with a trailing comma" 'on: [ pull_request, ]\n' 'on: [workflow_dispatch, ]\n'
+  shape "a scalar" 'on: pull_request\n' 'on: workflow_dispatch\n'
+  shape "a quoted key" '"on":\n  pull_request:\n' '"on":\n  workflow_dispatch:\n'
+  shape "a single-quoted key" "'on':\n  pull_request:\n" "'on':\n  workflow_dispatch:\n"
+  shape "a key with a space before the colon" 'on :\n  pull_request:\n' 'on :\n  workflow_dispatch:\n'
+  shape "a mapping" 'on:\n  pull_request:\n    branches: [main]\n' 'on:\n  workflow_dispatch:\n    inputs:\n      pull_request:\n        required: true\n'
+  shape "a mapping with a schedule" 'on:\n  schedule:\n  - cron: "0 3 * * *"\n  pull_request:\n' 'on:\n  schedule:\n  - cron: "0 3 * * *"\n  workflow_dispatch:\n'
+  shape "a mapping with comments" 'on:\n  # releases are by hand\n  pull_request:  # and checked\n' 'on:\n  # not pull_request\n  workflow_dispatch:  # by hand\n'
+  shape "a tab after the key" 'on:\t[pull_request]\n' 'on:\t[workflow_dispatch]\n'
+  shape "CRLF line ends, a list" 'on:\n- pull_request\n' 'on:\n- workflow_dispatch\n'
+  shape "CRLF line ends, a mapping" 'on:\n  pull_request:\n' 'on:\n  workflow_dispatch:\n'
+  shape "CRLF line ends, a scalar" 'on: pull_request\n' 'on: workflow_dispatch\n'
+  shape "a trigger the allow-list does not name" 'on:\n  push:\n' 'on:\n  schedule:\n'
+  shape "a flow mapping" 'on: { pull_request: { branches: [main] } }\n' '' 'on: { workflow_dispatch: {} }\n'
+  shape "a multi-line flow sequence" 'on: [\n  push,\n  pull_request\n]\n' '' 'on: [\n  workflow_dispatch\n]\n'
+  shape "a quoted event name" 'on:\n  "pull_request":\n' '' 'on:\n  "workflow_dispatch":\n'
+  shape "an anchored value" 'on: &events\n  pull_request:\n' '' 'on: &events\n  workflow_dispatch:\n'
+  shape "a tab-indented mapping" 'on:\n\tpull_request:\n' '' 'on:\n\tworkflow_dispatch:\n'
+  shape "a second on key" 'on: workflow_dispatch\non: pull_request\n'
+  shape "a document that ends the block" 'on:\n  workflow_dispatch:\n---\non: pull_request\n'
+
+  fixture fail "an on key indented away from the left edge" <<'YAML'
+  on:
+    pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+
+  # A write token can cut a release or push a tag without naming a secret.
+  fixture fail "write-all permissions in a pull-request workflow" <<'YAML'
+on: pull_request
+permissions: write-all
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture fail "a write permission in a pull-request workflow" <<'YAML'
+on: pull_request
+permissions:
+  contents: write
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture fail "a write permission on a job of a pull-request workflow" <<'YAML'
+on:
+- pull_request
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: "write"
+    steps:
+      - run: echo hi
+YAML
+  fixture fail "a flow-style write permission in a pull-request workflow" <<'YAML'
+on: pull_request
+permissions: { contents: write }
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture pass "read permissions in a pull-request workflow" <<'YAML'
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - name: write the report
+        run: echo hi
+      - run: echo "description: write the docs"
+YAML
+  fixture pass "a release workflow may hold a write token" <<'YAML'
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+
   fixture fail "a workflow whose triggers cannot be read" <<'YAML'
 name: no triggers
 jobs:
