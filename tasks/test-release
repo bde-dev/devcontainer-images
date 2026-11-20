@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#MISE description="Rung 1: which images a release covers, checked on a throwaway repository (no docker build)"
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(mktemp -d)
+trap 'rm -rf "$repo"' EXIT
+
+git -C "$repo" init -q
+git -C "$repo" config user.email test@example.invalid
+git -C "$repo" config user.name test
+git -C "$repo" config tag.gpgSign false
+git -C "$repo" config commit.gpgSign false
+mkdir -p "$repo/scripts" "$repo/base" "$repo/dotnet" "$repo/alpha" "$repo/.github"
+cp "$here"/scripts/{images,last-release,changed-images,release-targets,base-of} "$repo/scripts/"
+printf 'FROM upstream/os:1\n' > "$repo/base/Dockerfile"
+# Writes a flavour's Dockerfile: the given first line, then a FROM on the BASE variable.
+flavour() {
+  # shellcheck disable=SC2016 # the Dockerfile's ${BASE} is literal text here
+  printf '%s\nFROM ${BASE}\n' "$2" > "$repo/$1/Dockerfile"
+}
+flavour dotnet 'ARG BASE=registry/base:1.0.0'
+flavour alpha 'ARG BASE=registry/base:1.0.0'
+
+commit() { git -C "$repo" add -A && git -C "$repo" commit -q -m "$1"; }
+# A script that fails is a failure here, never an empty answer: several expectations
+# below are for no output at all.
+expect() {
+  local want=$1 what=$2 got
+  shift 2
+  if ! got=$(cd "$repo" && "scripts/$1" "${@:2}" 2>&1); then
+    echo "test-release: $what: scripts/$1 failed: $got" >&2
+    exit 1
+  fi
+  got=$(paste -sd' ' - <<<"$got")
+  [ "$got" = "$want" ] || { echo "test-release: $what: got '$got', expected '$want'" >&2; exit 1; }
+}
+refused() {
+  local what=$1
+  shift
+  if (cd "$repo" && "scripts/$1" "${@:2}" >/dev/null 2>&1); then
+    echo "test-release: $what: was accepted" >&2
+    exit 1
+  fi
+}
+
+commit "first"
+expect "base alpha dotnet" "base is listed first, then the flavours" images
+expect "base alpha dotnet" "an image with no release counts as changed" changed-images
+# Each image can be named when several have changed, whatever its place in that list.
+for image in base alpha dotnet; do
+  expect "$image" "$image can be released when every image has changed" release-targets "$image"
+done
+expect "registry/base:1.0.0" "a flavour's base is the version it pins" base-of dotnet
+expect "upstream/os:1" "base's base is the image it starts from" base-of base
+
+for image in base alpha dotnet; do git -C "$repo" tag "$image-1.0.0"; done
+expect "" "nothing has changed straight after a release" changed-images
+
+# A commit that touches no image releases nothing.
+echo ci > "$repo/.github/ci.yaml"
+commit "ci only"
+expect "" "a CI-only commit changes no image" changed-images
+expect "" "a CI-only commit gives 'changed' nothing to release" release-targets changed
+refused "an unchanged image without a refresh" release-targets base
+expect "base" "a refresh releases an unchanged image" release-targets base refresh
+
+# A flavour's change is that flavour's alone.
+echo sdk > "$repo/dotnet/mise.toml"
+commit "dotnet only"
+expect "dotnet" "a flavour change touches no other image" changed-images
+expect "dotnet" "the changed flavour can be released" release-targets dotnet
+refused "base, when only a flavour changed" release-targets base
+
+# A base change is base's alone: flavours follow when their pin is raised.
+git -C "$repo" tag dotnet-1.1.0
+echo belt > "$repo/base/mise.toml"
+commit "base only"
+expect "base" "a base change does not count as a flavour change" changed-images
+sed -i 's/base:1.0.0/base:1.1.0/' "$repo/dotnet/Dockerfile"
+commit "raise dotnet's pin"
+expect "base dotnet" "raising a flavour's pin changes that flavour" changed-images
+
+# Versions compare as numbers, and only <image>-MAJOR.MINOR.PATCH is a release tag.
+git -C "$repo" tag dotnet-1.9.0
+git -C "$repo" tag dotnet-1.10.0
+git -C "$repo" tag dotnet-notes
+expect "dotnet-1.10.0" "1.10.0 is newer than 1.9.0" last-release dotnet
+expect "base-1.0.0" "one image's tags are not another's" last-release base
+
+refused "an image that does not exist" release-targets ruby
+refused "a refresh that names no image" release-targets changed refresh
+
+# A release has to say what it stands on: a base reference with no version is refused.
+for unversioned in 'ARG BASE=registry/base' 'ARG BASE=registry/base:latest' 'ARG BASE=registry/base@sha256:0123' '# no pin'; do
+  flavour alpha "$unversioned"
+  refused "a flavour built on '$unversioned'" base-of alpha
+done
+# A flavour stands on a release of base, and a release is MAJOR.MINOR.PATCH: the date
+# tags the registry still holds from before are not releases.
+for dated in 'ARG BASE=registry/base:2026.11.10' 'ARG BASE=registry/base:2026.11.10.1' 'ARG BASE=registry/base:stable'; do
+  flavour alpha "$dated"
+  refused "a flavour pinned by '$dated'" base-of alpha
+done
+printf '%s\n' 'FROM --platform=linux/amd64 builder:2 AS build' 'FROM upstream/os:3' > "$repo/base/Dockerfile"
+expect "upstream/os:3" "the final stage is what an image is built on" base-of base
+flavour alpha 'ARG BASE=registry:5000/base:1.2.0@sha256:0123'
+expect "registry:5000/base:1.2.0@sha256:0123" "a version with a digest is still a version" base-of alpha
+
+echo "test-release: ok"

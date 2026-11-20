@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Prints every tag the registry holds for one image, one per line, and nothing for an
+# image that has never been pushed. Reads the robot login from HARBOR_ROBOT_USERNAME and
+# HARBOR_ROBOT_SECRET.
+set -euo pipefail
+
+REGISTRY=harbor.bde-dev.net
+PROJECT=devcontainer-images
+image=${1:?usage: registry-tags <image>}
+: "${HARBOR_ROBOT_USERNAME:?set HARBOR_ROBOT_USERNAME}"
+: "${HARBOR_ROBOT_SECRET:?set HARBOR_ROBOT_SECRET}"
+
+token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
+  "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$PROJECT/$image:pull" | jq -r .token)
+
+body=$(mktemp)
+trap 'rm -f "$body"' EXIT
+status=$(curl -sS -o "$body" -w '%{http_code}' -H "Authorization: Bearer $token" \
+  "https://$REGISTRY/v2/$PROJECT/$image/tags/list?n=1000")
+case "$status" in
+  200) jq -r '.tags[]?' "$body" ;;
+  404) ;;
+  *) echo "registry-tags: $REGISTRY answered $status for $PROJECT/$image" >&2; exit 1 ;;
+esac

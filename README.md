@@ -10,9 +10,10 @@ config never bakes in; it lands at devpod start-up via the dotfiles hook.
 ## Layout
 
 - `base/` — base Dockerfile + mise config and lockfile (the pinned tool belt)
-- `dotnet/` — .NET flavour, `FROM` base via the `BASE` build-arg; pins the .NET 8 and 10 SDKs
-- `tasks/` — build and test entry points, run via `mise run <task>`
-- `.github/workflows/build.yaml` — CI build and publish
+- `dotnet/` — .NET flavour, built on the base version its Dockerfile pins in `ARG BASE`; pins the .NET 8 and 10 SDKs
+- `tasks/` — build, test and publish entry points, run via `mise run <task>`
+- `scripts/` — the release logic the tasks and CI share: which images changed, which version comes next
+- `.github/workflows/build.yaml` — CI release
 - `renovate.json` — version-bump PRs for the pins
 - `.devcontainer/` — the devpod this repo is worked from
 
@@ -23,21 +24,27 @@ version bump ships as one small content-addressed blob.
 
 The tasks are rungs of one verification ladder. `mise tasks` lists them.
 
-- **Rung 1, no Docker:** `test-config` resolves every `tool@version` in each flavour's
+- **Rung 1, no Docker:** `test-config` resolves every `tool@version` in each image's
   `mise.toml` against the lockfile, so a bad pin fails before any image is built.
+  `test-version` and `test-release` check the release logic: the version a release would
+  pick, and which images a release covers. `test-pins` checks that every image names the
+  version of what it is built on.
 - **Rung 2, local images:** `build-base` and `build-dotnet` build `devcontainer-base:local`
   and `devcontainer-dotnet:local`; `test-base` and `test-dotnet` run each image as the
-  `vscode` user and assert the belt and SDKs are present and runnable.
+  `vscode` user and assert the belt and SDKs are present and runnable. Here a flavour is
+  built on the base from the working tree, not the version it pins, so a base change is
+  tried against every flavour before either is released.
 - `verify` runs the whole ladder.
 - **Rung 3, publish:** see Publishing below.
 
 ## Publishing
 
 Images are published to the private Harbor `devcontainer-images` project as immutable
-SemVer tags (`MAJOR.MINOR.PATCH`) with an SBOM attestation. Both flavours release as one
-version, and a moving `stable` tag points at the most recent version that passed the
-verification ladder. Consumers pin a version tag, which Renovate keeps current. Pushes
-authenticate as the project-scoped robot account only, never an admin user.
+SemVer tags (`MAJOR.MINOR.PATCH`) with an SBOM attestation. Each image has its own
+version line, so releasing one image publishes nothing on any other. A moving `stable`
+tag on each image points at its most recent version that passed the verification ladder.
+Consumers pin a version tag, which Renovate keeps current. Pushes authenticate as the
+project-scoped robot account only, never an admin user.
 
 The bump level says what a release changes for a consumer, so a pin can take a minor or a
 patch without thought and a major with a look:
@@ -47,24 +54,40 @@ patch without thought and a major with a look:
 - **minor:** something is added (a tool, an SDK) and nothing is removed.
 - **patch:** the same contents at newer patch levels.
 
-`publish` takes the level and works out the number: the next one after the highest version
-either flavour already holds in the registry.
+A release takes the image and the level and works out the number: the next one after the
+highest version that image already holds in the registry. Git marks it with the tag
+`<image>-<version>` (`dotnet-1.4.0`). An image whose own directory is unchanged since its
+last tag has nothing to release, so a change to CI, tasks or docs publishes nothing.
+Rebuilding unchanged contents on purpose, to pick up upstream patches, takes the refresh
+option.
 
-Pushes have to originate inside the LAN. Harbor is fronted by a Cloudflare tunnel whose
-per-request body cap sits far below an image layer, so anything outside the LAN can pull,
-browse and call the API but cannot push. That gives two publishers:
+A flavour names the base version it stands on in its own Dockerfile, and a release builds
+on exactly that version. A new base therefore reaches a flavour the way it reaches any
+other consumer: Renovate raises the pin, and the flavour's next release ships it. Every
+published image records the commit it was built from and the image it stands on in its
+labels.
 
-- **Rung 3, workstation:** `publish <major|minor|patch>` runs the ladder, then builds both
-  flavours with `buildx` on a `docker-container` builder (the default driver cannot push
-  attestations) and pushes the version. `promote-stable <version>` re-tags a published
-  version as `stable` by digest, so nothing is rebuilt and the attestations ride along. Both tasks
-  read `HARBOR_ROBOT_USERNAME` / `HARBOR_ROBOT_SECRET` from the environment (the secret is
-  the Key Vault entry `harbor-gha-robot-creds`), refuse any non-robot username, refuse to
-  run if the registry does not resolve to a private address, and log in under a throwaway
-  `DOCKER_CONFIG` so the workstation's own registry login is left alone.
-- **CI, `build.yaml`:** the same build on a runner, plus a GitHub release with generated
-  notes. It runs by hand only until an in-LAN runner exists; GitHub-hosted runners sit
-  outside the LAN and fail at the login step.
+Harbor is fronted by a Cloudflare tunnel whose HTTP hostname caps a request body far below
+an image layer, so a push from outside the LAN cannot use that hostname. There are two
+publishers:
+
+- **CI, `build.yaml`:** run by hand on the default branch with the image (or `changed`,
+  for every image whose directory changed since its last release), the bump level and
+  the refresh option. Images release side by side on GitHub-hosted runners, each with a
+  GitHub release and generated notes, and one release of an image runs at a time. The
+  runner reaches Harbor through the tunnel's TCP route, opened by the `harbor-route`
+  action, which admits only an Access service token.
+- **Rung 3, workstation:** `publish <image> <major|minor|patch>` is the same release from
+  inside the LAN, for when CI or the route is unavailable. It runs the image's rungs of
+  the ladder, builds from a committed tree with `buildx` on a `docker-container` builder
+  (the default driver cannot push attestations), then pushes the version and its release
+  tag.
+  `promote-stable <image> <version>` re-tags a published version as `stable` by digest,
+  so nothing is rebuilt and the attestations ride along. Both tasks read
+  `HARBOR_ROBOT_USERNAME` / `HARBOR_ROBOT_SECRET` from the environment (the secret is the
+  Key Vault entry `harbor-gha-robot-creds`) and refuse any non-robot username; `publish`
+  also refuses to run if the registry does not resolve to a private address, and logs in
+  under a throwaway `DOCKER_CONFIG` so the workstation's own registry login is left alone.
 
 The Harbor project is private. Nothing here needs it to be public: the Dockerfiles and
 lockfiles are the reproducible artefact.

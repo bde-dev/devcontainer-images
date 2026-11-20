@@ -1,88 +1,137 @@
 name: build
 
 on:
-  # Manual only: GitHub-hosted runners cannot reach Harbor through the Cloudflare
-  # tunnel (login answers 530), so push and schedule triggers only produce failures.
-  # Restore push (branches: [main], paths: base/**, dotnet/**, this file) and the
-  # weekly schedule once a runner can reach the registry.
+  # A release is a deliberate act: it names the image and what the release changes for a
+  # consumer. `changed` covers every image whose own directory has changed since its
+  # last release; a commit that touches no image has nothing to release.
   workflow_dispatch:
     inputs:
+      target:
+        description: "Image to release: an image directory (base, dotnet, ...) or `changed`"
+        required: true
+        type: string
+        default: changed
       bump:
         description: What this release changes for a consumer (see README, Publishing)
         required: true
         type: choice
         options: [patch, minor, major]
+      refresh:
+        description: Release the named image even though its contents are unchanged
+        type: boolean
+        default: false
 
 env:
   REGISTRY: harbor.bde-dev.net
   PROJECT: devcontainer-images
 
 jobs:
-  build:
+  plan:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # release creation; pins the default token to only this
+      contents: read
+    outputs:
+      images: ${{ steps.targets.outputs.images }}
+    steps:
+      # A release tag marks the commit that was built, and the next release measures
+      # change from it, so releases come from the default branch only.
+      - name: Releases are cut from the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "this run is on $GITHUB_REF; a release is cut from $DEFAULT_BRANCH" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release tags decide what has changed
+
+      - name: Work out which images this release covers
+        id: targets
+        env:
+          TARGET: ${{ inputs.target }}
+          REFRESH: ${{ inputs.refresh && 'refresh' || '' }}
+        run: |
+          images=$(scripts/release-targets "$TARGET" ${REFRESH:+"$REFRESH"})
+          echo "images=$(jq -Rsc 'split("\n") | map(select(. != ""))' <<<"$images")" >> "$GITHUB_OUTPUT"
+          echo "releasing: ${images:-nothing, no image has changed since its last release}"
+
+  # Images release side by side. Each stands on its own: a flavour builds on the base
+  # version its Dockerfile pins, so nothing here waits on anything else.
+  release:
+    needs: plan
+    if: needs.plan.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the release and its tag; pins the default token to only this
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    # One release of an image at a time: the version is the next one after what the
+    # registry holds, so two runs side by side would pick the same number.
+    concurrency:
+      group: release-${{ matrix.image }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
+          fetch-depth: 0
+
+      # Harbor's HTTP hostname caps a request body below the size of an image layer, so
+      # the runner reaches Harbor through the tunnel's TCP route. After this step the
+      # job is logged in and pushes as it would on the LAN.
+      - uses: bde-dev/harbor-route@v1
+        with:
+          access-client-id: ${{ secrets.HARBOR_PUSH_ACCESS_CLIENT_ID }}
+          access-client-secret: ${{ secrets.HARBOR_PUSH_ACCESS_CLIENT_SECRET }}
           username: ${{ vars.HARBOR_ROBOT_USERNAME }}
           password: ${{ secrets.HARBOR_ROBOT_SECRET }}
 
-      - name: Compute the next version from the published tags
+      - name: Work out the version
         env:
+          IMAGE: ${{ matrix.image }}
           BUMP: ${{ inputs.bump }}
           HARBOR_ROBOT_USERNAME: ${{ vars.HARBOR_ROBOT_USERNAME }}
           HARBOR_ROBOT_SECRET: ${{ secrets.HARBOR_ROBOT_SECRET }}
+        # Each value is assigned on its own line so that a failure stops the job: inside
+        # an `echo` a failed lookup would pass as an empty answer, and an empty tag list
+        # reads as a first release.
         run: |
-          for repo in base dotnet; do
-            token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
-              "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$PROJECT/$repo:pull" | jq -r .token)
-            curl -fsS -H "Authorization: Bearer $token" \
-              "https://$REGISTRY/v2/$PROJECT/$repo/tags/list?n=1000" | jq -r '.tags[]?'
-          done > tags
-          echo "TAG=$(scripts/next-version "$BUMP" < tags)" >> "$GITHUB_ENV"
+          tags=$(scripts/registry-tags "$IMAGE")
+          version=$(scripts/next-version "$BUMP" <<<"$tags")
+          previous=$(scripts/last-release "$IMAGE")
+          base_name=$(scripts/base-of "$IMAGE")
+          {
+            echo "VERSION=$version"
+            echo "PREVIOUS=$previous"
+            echo "BASE_NAME=$base_name"
+          } >> "$GITHUB_ENV"
 
-      - name: Build and push base
+      - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: base/Dockerfile
+          file: ${{ matrix.image }}/Dockerfile
           push: true
           sbom: true
+          provenance: mode=min
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ env.TAG }}
-          tags: ${{ env.REGISTRY }}/${{ env.PROJECT }}/base:${{ env.TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.base.name=${{ env.BASE_NAME }}
+          tags: ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ matrix.image }}:${{ env.VERSION }}
+          # One cache per image: a shared scope keeps only the last image's layers.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
-      - name: Build and push dotnet
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: dotnet/Dockerfile
-          push: true
-          sbom: true
-          build-args: |
-            BASE=${{ env.REGISTRY }}/${{ env.PROJECT }}/base:${{ env.TAG }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ env.TAG }}
-          tags: ${{ env.REGISTRY }}/${{ env.PROJECT }}/dotnet:${{ env.TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Create release with generated notes
+      # The tag goes on the commit that was built. If this step fails after the push,
+      # the image's revision label names the commit to tag by hand.
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${TAG}" > /dev/null 2>&1; then
-            echo "release ${TAG} already exists — skipping"
-          else
-            gh release create "${TAG}" --title "${TAG}" --generate-notes
-          fi
+          TAG: ${{ matrix.image }}-${{ env.VERSION }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes ${PREVIOUS:+--notes-start-tag "$PREVIOUS"}

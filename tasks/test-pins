@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Rung 1: every image names the version of what it is built on (no docker build)"
+set -euo pipefail
+
+for image in $(scripts/images); do
+  base=$(scripts/base-of "$image")
+  echo "$image builds on $base"
+done

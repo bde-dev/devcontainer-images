@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
-#MISE description="Rung 3: build both images with SBOM attestation and push the next SemVer tag to Harbor (in-LAN only)"
-#MISE depends=["verify"]
+#MISE description="Rung 3: build one image with SBOM attestation and push its next SemVer tag to Harbor (in-LAN only)"
+#USAGE arg "<image>" help="the image to release: base or a flavour"
 #USAGE arg "<bump>" help="major, minor or patch: what this release changes for a consumer (see README, Publishing)"
-# Publishes from the workstation. Pushes must originate inside the LAN: the Cloudflare
-# tunnel in front of Harbor caps request bodies well below an image layer, so this task
-# refuses to run unless the registry resolves to a private address. Credentials are the
-# project-scoped robot only; the task never falls back to the admin account, and the
-# login lives in a throwaway DOCKER_CONFIG so the workstation's own docker login is untouched.
+#USAGE flag "--refresh" help="release the image even though its contents are unchanged since its last release"
+# Publishes from the workstation, as the fallback for CI. A push from here must stay
+# inside the LAN: the HTTP hostname in front of Harbor caps request bodies well below an
+# image layer, so this task refuses to run unless the registry resolves to a private
+# address. Credentials are the project-scoped robot only; the task never falls back to
+# the admin account, and the login lives in a throwaway DOCKER_CONFIG so the
+# workstation's own docker login is untouched.
 set -euo pipefail
 
 REGISTRY=harbor.bde-dev.net
 PROJECT=devcontainer-images
 BUILDER=devcontainer-images
 SOURCE=https://github.com/bde-dev/devcontainer-images
-bump=${usage_bump:-${1:-}}
+image=${usage_image:-${1:-}}
+bump=${usage_bump:-${2:-}}
 case "$bump" in
   major|minor|patch) ;;
-  *) echo "publish: say what this release changes — publish <major|minor|patch>" >&2; exit 1 ;;
+  *) echo "publish: say what this release changes — publish <image> <major|minor|patch>" >&2; exit 1 ;;
 esac
+
+# An image whose own directory is unchanged since its last release has nothing to release.
+if [ "${usage_refresh:-false}" = true ]; then
+  scripts/release-targets "$image" refresh >/dev/null
+else
+  scripts/release-targets "$image" >/dev/null
+fi
+
+# The build reads the working tree and the release tag marks HEAD, so they have to agree.
+if [ -n "$(git status --porcelain -- "$image/")" ]; then
+  echo "publish: $image/ has uncommitted changes; a release is cut from a commit" >&2
+  exit 1
+fi
+BASE_NAME=$(scripts/base-of "$image")
+REVISION=$(git rev-parse HEAD)
 
 : "${HARBOR_ROBOT_USERNAME:?set HARBOR_ROBOT_USERNAME (robot\$devcontainer-images+gha)}"
 : "${HARBOR_ROBOT_SECRET:?set HARBOR_ROBOT_SECRET (AKV secret harbor-gha-robot-creds)}"
@@ -29,14 +47,19 @@ esac
 ip=$(getent ahostsv4 "$REGISTRY" | awk 'NR==1{print $1}')
 case "$ip" in
   10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
-  *) echo "publish: refusing — $REGISTRY resolves to ${ip:-nothing}, not an in-LAN address (the tunnel cannot take layer pushes)" >&2; exit 1 ;;
+  *) echo "publish: refusing — $REGISTRY resolves to ${ip:-nothing}, not an in-LAN address (the HTTP hostname cannot take layer pushes)" >&2; exit 1 ;;
 esac
+
+# The image's own rungs of the ladder. A flavour is tried there on the base built from
+# the working tree; the release below builds it on the base version its Dockerfile pins.
+mise run test-config "$image"
+mise run "test-$image"
 
 # Attestations need a docker-container builder; the default docker driver cannot push them.
 # The builder runs on the host network: the push happens from inside the BuildKit container,
 # and a bridged container does not see the host's /etc/hosts split-horizon entry for the
 # registry, so it would resolve the public (tunnelled) address and the push would 413.
-if ! docker buildx inspect "$BUILDER" 2>/dev/null | grep -q 'network="host"'; then
+if ! docker buildx inspect "$BUILDER" 2>/dev/null | grep 'network="host"' > /dev/null; then
   docker buildx rm "$BUILDER" >/dev/null 2>&1 || true
   docker buildx create --name "$BUILDER" --driver docker-container \
     --driver-opt network=host --bootstrap >/dev/null
@@ -50,30 +73,21 @@ src=${DOCKER_CONFIG:-$HOME/.docker}
 export DOCKER_CONFIG="$tmp"
 printf '%s' "$HARBOR_ROBOT_SECRET" | docker login "$REGISTRY" -u "$HARBOR_ROBOT_USERNAME" --password-stdin
 
-# Both flavours release as one version: the next one after the highest tag either holds.
-: > "$tmp/tags"
-for repo in base dotnet; do
-  token=$(curl -fsS -u "$HARBOR_ROBOT_USERNAME:$HARBOR_ROBOT_SECRET" \
-    "https://$REGISTRY/service/token?service=harbor-registry&scope=repository:$PROJECT/$repo:pull" | jq -r .token)
-  curl -fsS -H "Authorization: Bearer $token" \
-    "https://$REGISTRY/v2/$PROJECT/$repo/tags/list?n=1000" | jq -r '.tags[]?' >> "$tmp/tags"
-done
-VERSION=$(scripts/next-version "$bump" < "$tmp/tags")
+# Each image has its own version line: the next one after the highest tag it holds.
+VERSION=$(scripts/registry-tags "$image" | scripts/next-version "$bump")
+REF="$REGISTRY/$PROJECT/$image:$VERSION"
 
-BASE_REF="$REGISTRY/$PROJECT/base:$VERSION"
-DOTNET_REF="$REGISTRY/$PROJECT/dotnet:$VERSION"
-
-echo "publish: $BASE_REF ($bump)"
-docker buildx build --builder "$BUILDER" -f base/Dockerfile \
+echo "publish: $REF ($bump)"
+docker buildx build --builder "$BUILDER" -f "$image/Dockerfile" \
   --label "org.opencontainers.image.source=$SOURCE" \
   --label "org.opencontainers.image.version=$VERSION" \
-  --sbom=true --provenance=mode=min -t "$BASE_REF" --push .
+  --label "org.opencontainers.image.revision=$REVISION" \
+  --label "org.opencontainers.image.base.name=$BASE_NAME" \
+  --sbom=true --provenance=mode=min -t "$REF" --push .
 
-echo "publish: $DOTNET_REF ($bump)"
-docker buildx build --builder "$BUILDER" -f dotnet/Dockerfile \
-  --build-arg "BASE=$BASE_REF" \
-  --label "org.opencontainers.image.source=$SOURCE" \
-  --label "org.opencontainers.image.version=$VERSION" \
-  --sbom=true --provenance=mode=min -t "$DOTNET_REF" --push .
-
-echo "publish: pushed $VERSION"
+# The release tag is what the next release measures change against, so the release is
+# not finished until the tag is shared. If the push fails, the image's revision label
+# names the commit to tag by hand.
+git tag "$image-$VERSION" "$REVISION"
+git push origin "$image-$VERSION"
+echo "publish: pushed $VERSION, tagged $image-$VERSION"

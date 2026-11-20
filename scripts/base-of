@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Prints the image an image is built on: the version a flavour pins in `ARG BASE`, or the
+# upstream image `base` starts from. Refuses a reference that names no version, because a
+# release has to say exactly what it stands on.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+image=${1:?usage: base-of <image>}
+ref=$(awk '
+  /^ARG BASE=/ { sub(/^ARG BASE=/, ""); print $1; pinned = 1; exit }
+  /^FROM /     { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { from = $i; break } }
+  END          { if (!pinned) print from }
+' "$image/Dockerfile")
+
+# The version is the tag on the last path segment; a digest alone, `latest`, an unset
+# variable or no tag at all is not one.
+name=${ref##*/}
+name=${name%%@*}
+case "$ref" in
+  *'$'* | *'"'* | *"'"*) name= ;;
+esac
+case "$name" in
+  *:latest | *: | '') versioned=false ;;
+  *:*) versioned=true ;;
+  *) versioned=false ;;
+esac
+if [ "$versioned" != true ]; then
+  echo "base-of: $image/Dockerfile builds on '$ref', which names no version" >&2
+  exit 1
+fi
+
+# A flavour stands on a release of base, and a release is MAJOR.MINOR.PATCH. The registry
+# also holds date tags from before releases were versioned (YYYY.M.DD) and a moving
+# `stable`; neither is a release.
+if grep '^ARG BASE=' "$image/Dockerfile" > /dev/null; then
+  tag=${name##*:}
+  if ! [[ $tag =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "base-of: $image/Dockerfile pins base at '$tag', which is not a MAJOR.MINOR.PATCH release" >&2
+    exit 1
+  fi
+fi
+
+echo "$ref"

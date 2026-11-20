@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Prints the images whose own directory has changed since their last release, one per
+# line. An image with no release yet counts as changed. A change anywhere else in the
+# repository (CI, tasks, docs) is not a change to any image, so it releases nothing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+for image in $(scripts/images); do
+  last=$(scripts/last-release "$image")
+  if [ -z "$last" ] || ! git diff --quiet "$last" HEAD -- "$image/"; then
+    echo "$image"
+  fi
+done

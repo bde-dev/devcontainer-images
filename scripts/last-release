@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Prints the git tag of an image's newest release, or nothing when it has none. A release
+# is tagged `<image>-<version>`, so each image has its own line of tags.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+image=${1:?usage: last-release <image>}
+git tag --list "$image-*" \
+  | grep -E "^$image-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$" \
+  | sort -V | tail -n 1 || true

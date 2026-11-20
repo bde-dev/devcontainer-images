@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Prints the images this repository builds, one per line: every top-level directory that
+# holds a Dockerfile. `base` comes first, then the flavours.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+for dockerfile in */Dockerfile; do
+  echo "${dockerfile%/Dockerfile}"
+done | sort | awk '$0 == "base" { print; next } { flavours[++n] = $0 } END { for (i = 1; i <= n; i++) print flavours[i] }'

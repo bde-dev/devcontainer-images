@@ -1,4 +1,6 @@
-ARG BASE=harbor.bde-dev.net/devcontainer-images/base
+# The base version this flavour stands on. A release builds on exactly this; the local
+# ladder overrides it with the base built from the working tree.
+ARG BASE=harbor.bde-dev.net/devcontainer-images/base:1.0.0
 FROM ${BASE}
 
 COPY --chown=vscode:vscode dotnet/mise.toml /mise/conf.d/20-dotnet.toml

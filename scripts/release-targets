@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Prints the images a release covers, one per line.
+#   release-targets changed          every image whose directory changed since its last release
+#   release-targets <image>          that image, refused when its directory is unchanged
+#   release-targets <image> refresh  that image, changed or not: a deliberate rebuild of the
+#                                    same contents, to pick up upstream patches
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+target=${1:?usage: release-targets <changed|image> [refresh]}
+refresh=${2:-}
+
+# Reads its input to the end: a match that stopped early would close the pipe on the
+# script still writing to it, and pipefail would turn that into "not found".
+listed() { grep -x -- "$1" > /dev/null; }
+
+if [ "$target" = changed ]; then
+  if [ "$refresh" = refresh ]; then
+    echo "release-targets: a refresh rebuilds one image on purpose, so it has to name that image" >&2
+    exit 1
+  fi
+  scripts/changed-images
+  exit 0
+fi
+
+if ! scripts/images | listed "$target"; then
+  echo "release-targets: '$target' is not an image here ($(scripts/images | paste -sd' '))" >&2
+  exit 1
+fi
+
+if [ "$refresh" != refresh ] && ! scripts/changed-images | listed "$target"; then
+  echo "release-targets: $target is unchanged since $(scripts/last-release "$target"), so there is nothing to release; ask for a refresh to rebuild it anyway" >&2
+  exit 1
+fi
+
+echo "$target"
