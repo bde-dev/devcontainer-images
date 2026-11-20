@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-#MISE description="Rung 1: no workflow with a pull request trigger can reach a secret, a registry login or the publish route (no docker build; optionally the directory to scan)"
-# A pull request runs code its author wrote, so a workflow it triggers must hold nothing
-# that can publish an image. This reads each workflow's `on:` block and, for every one
-# triggered by a pull request, fails on any line that names a secret, the publish route, a
-# registry login or an image push. It reads text, so a comment that names one fails too:
-# better a reworded comment than a credential that slipped past a parser.
+#MISE description="Rung 1: no workflow a pull request can trigger can reach a secret, a registry login or the publish route (no docker build; optionally the directory to scan)"
+# A pull request runs code its author wrote, so a workflow it can trigger must hold nothing
+# that can publish an image. This reads each workflow's `on:` block and, for every one with
+# a trigger a pull request reaches, fails on any line that names a secret, the publish
+# route, a registry login or an image push. It reads text, so a comment that names one
+# fails too: better a reworded comment than a credential that slipped past a parser.
+#
+# The triggers a pull request reaches are `pull_request` and its variants (`_target`,
+# `_review`, `_review_comment`), `issue_comment` (a comment on a pull request fires it),
+# `workflow_run` (it follows another workflow, including one a pull request started) and
+# `merge_group` (it runs the merge of queued pull requests).
 #
 # The checker is tried first on fixtures, so a pattern that stopped matching fails here
 # before it can let a real workflow through.
 set -euo pipefail
 
 on_key='^("on"|'"'"'on'"'"'|on)[ \t]*:'
+reachable='pull_request|issue_comment|workflow_run|merge_group'
 
 # The workflow's `on:` block, comments removed. Fails when the file has none, so a
 # workflow whose triggers cannot be read is refused, never assumed safe.
@@ -36,7 +42,7 @@ patterns=(
   'build-push-action|--push\b|\bpush:[ \t]*true|\b(docker|podman|buildah|skopeo|oras|crane|regctl)\b.*\bpush\b|\b(mise|tasks/).*\b(publish|promote-stable)\b'
 )
 
-# Prints every offence in the pull-request workflows under a directory; fails if any.
+# Prints every offence in the workflows a pull request can trigger under a directory; fails if any.
 scan() {
   local dir=$1 file trig hit i bad=0
   for file in "$dir"/*.yaml "$dir"/*.yml; do
@@ -46,10 +52,10 @@ scan() {
       bad=1
       continue
     fi
-    grep -Eq 'pull_request' <<<"$trig" || continue
+    grep -Eq "$reachable" <<<"$trig" || continue
     for i in "${!patterns[@]}"; do
       while IFS= read -r hit; do
-        echo "test-workflows: $file:$hit  <- a pull-request workflow names ${labels[$i]}" >&2
+        echo "test-workflows: $file:$hit  <- a workflow a pull request can trigger names ${labels[$i]}" >&2
         bad=1
       done < <(grep -Ein -e "${patterns[$i]}" "$file" || true)
     done
@@ -228,6 +234,90 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: mise run publish base patch
+YAML
+  fixture pass "a workflow_run workflow with nothing in it" <<'YAML'
+on:
+  workflow_run:
+    workflows: [verify]
+    types: [completed]
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo done
+YAML
+  fixture pass "a merge_group workflow with nothing in it" <<'YAML'
+on:
+  merge_group:
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run verify
+YAML
+  fixture pass "an issue_comment workflow with nothing in it" <<'YAML'
+on: issue_comment
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello
+YAML
+  fixture fail "a secret under pull_request_review" <<'YAML'
+on:
+  pull_request_review:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret under pull_request_review_comment" <<'YAML'
+on: [pull_request_review_comment]
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret under issue_comment" <<'YAML'
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret under workflow_run" <<'YAML'
+on:
+  workflow_run:
+    workflows: [verify]
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a registry login under workflow_run" <<'YAML'
+on:
+  workflow_run:
+    workflows: [verify]
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v4
+YAML
+  fixture fail "the route action under merge_group" <<'YAML'
+on:
+  merge_group:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bde-dev/harbor-route@v1
 YAML
   fixture fail "a workflow whose triggers cannot be read" <<'YAML'
 name: no triggers

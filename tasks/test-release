@@ -12,7 +12,7 @@ git -C "$repo" config user.name test
 git -C "$repo" config tag.gpgSign false
 git -C "$repo" config commit.gpgSign false
 mkdir -p "$repo/scripts" "$repo/base" "$repo/dotnet" "$repo/alpha" "$repo/.github"
-cp "$here"/scripts/{images,last-release,changed-images,release-targets,base-of} "$repo/scripts/"
+cp "$here"/scripts/{images,last-release,changed-images,release-targets,base-of,mise-version} "$repo/scripts/"
 printf 'FROM upstream/os:1\n' > "$repo/base/Dockerfile"
 # Writes a flavour's Dockerfile: the given first line, then a FROM on the BASE variable.
 flavour() {
@@ -106,5 +106,15 @@ printf '%s\n' 'FROM --platform=linux/amd64 builder:2 AS build' 'FROM upstream/os
 expect "upstream/os:3" "the final stage is what an image is built on" base-of base
 flavour alpha 'ARG BASE=registry:5000/base:1.2.0@sha256:0123'
 expect "registry:5000/base:1.2.0@sha256:0123" "a version with a digest is still a version" base-of alpha
+
+# The mise the ladder runs under CI is the one base copies in: one line, tag only.
+printf '%s\n' 'FROM upstream/os:3' 'COPY --from=ghcr.io/jdx/mise:2026.11.10 /usr/local/bin/mise /usr/local/bin/' > "$repo/base/Dockerfile"
+expect "2026.11.10" "the mise version is the tag of the image base copies it from" mise-version
+printf '%s\n' 'FROM upstream/os:3' 'COPY --from=ghcr.io/jdx/mise:2026.11.10@sha256:0123 /usr/local/bin/mise /usr/local/bin/' > "$repo/base/Dockerfile"
+expect "2026.11.10" "a mise tag with a digest is still the tag" mise-version
+printf '%s\n' 'FROM upstream/os:3' > "$repo/base/Dockerfile"
+refused "a base that copies no mise" mise-version
+printf '%s\n' 'FROM upstream/os:3' 'COPY --from=ghcr.io/jdx/mise:2026.11.10 /a /a' 'COPY --from=ghcr.io/jdx/mise:2026.11.9 /b /b' > "$repo/base/Dockerfile"
+refused "a base that names two mise versions" mise-version
 
 echo "test-release: ok"

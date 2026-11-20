@@ -38,10 +38,17 @@ jobs:
         with:
           persist-credentials: false
 
-      # mise runs the ladder. The images' tools install inside each rung, so nothing is
-      # installed or cached here.
+      # The ladder runs under the mise the images bake, read from base/Dockerfile, so a
+      # change to that version is verified by the version it introduces. The images' tools
+      # install inside each rung, so nothing is installed or cached here.
+      - id: mise
+        run: |
+          version=$(scripts/mise-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - uses: jdx/mise-action@v5
         with:
+          version: ${{ steps.mise.outputs.version }}
           install: false
           cache: false
 
