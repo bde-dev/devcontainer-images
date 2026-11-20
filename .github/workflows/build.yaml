@@ -1,9 +1,13 @@
 name: build
 
 on:
-  # A release is a deliberate act: it names the image and what the release changes for a
-  # consumer. `changed` covers every image whose own directory has changed since its
-  # last release; a commit that touches no image has nothing to release.
+  # Two ways in. By hand, a release names the image and what the release changes for a
+  # consumer. On the weekly schedule it covers every changed image and is always a patch,
+  # so a week of merged dependency bumps goes out as one version and a minor or a major
+  # stays a deliberate act. `changed` is every image whose own directory has changed
+  # since its last release; a commit that touches no image has nothing to release.
+  schedule:
+    - cron: "17 4 * * 1" # Monday, after the night's dependency merges
   workflow_dispatch:
     inputs:
       target:
@@ -51,7 +55,7 @@ jobs:
       - name: Work out which images this release covers
         id: targets
         env:
-          TARGET: ${{ inputs.target }}
+          TARGET: ${{ github.event_name == 'schedule' && 'changed' || inputs.target }}
           REFRESH: ${{ inputs.refresh && 'refresh' || '' }}
         run: |
           images=$(scripts/release-targets "$TARGET" ${REFRESH:+"$REFRESH"})
@@ -93,7 +97,7 @@ jobs:
       - name: Work out the version
         env:
           IMAGE: ${{ matrix.image }}
-          BUMP: ${{ inputs.bump }}
+          BUMP: ${{ github.event_name == 'schedule' && 'patch' || inputs.bump }}
           HARBOR_ROBOT_USERNAME: ${{ vars.HARBOR_ROBOT_USERNAME }}
           HARBOR_ROBOT_SECRET: ${{ secrets.HARBOR_ROBOT_SECRET }}
         # Each value is assigned on its own line so that a failure stops the job: inside
