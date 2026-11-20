@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 
 for image in $(scripts/images); do
   last=$(scripts/last-release "$image")
-  if [ -z "$last" ] || ! git diff --quiet "$last" HEAD -- "$image/"; then
+  # Only the exit status answers here: some git builds print the diff header of a new file
+  # even under --quiet, and this script's output is the list of images.
+  if [ -z "$last" ] || ! git diff --quiet "$last" HEAD -- "$image/" > /dev/null; then
     echo "$image"
   fi
 done
