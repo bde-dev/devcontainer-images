@@ -115,8 +115,9 @@ publishers:
 - **CI, `build.yaml`:** run by hand on the default branch with the image (or `changed`,
   for every image whose directory changed since its last release), the bump level and
   the refresh option. It also runs on a weekly schedule, which releases every changed
-  image as a patch, so merged dependency bumps reach consumers as one version a week
-  with nobody pressing a button. The schedule never cuts a minor or a major: a change
+  image as a patch, so a week of merged dependency bumps reaches consumers as one
+  version per image with no separate release step. The schedule never cuts a minor or a
+  major, and nothing checks what the week's changes amount to: a change
   that needs one is released by hand before the week's run picks it up as a patch.
   Images release side by side on GitHub-hosted runners, each with a
   GitHub release and generated notes, and one release of an image runs at a time. The
