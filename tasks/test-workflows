@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+#MISE description="Rung 1: no workflow with a pull request trigger can reach a secret, a registry login or the publish route (no docker build; optionally the directory to scan)"
+# A pull request runs code its author wrote, so a workflow it triggers must hold nothing
+# that can publish an image. This reads each workflow's `on:` block and, for every one
+# triggered by a pull request, fails on any line that names a secret, the publish route, a
+# registry login or an image push. It reads text, so a comment that names one fails too:
+# better a reworded comment than a credential that slipped past a parser.
+#
+# The checker is tried first on fixtures, so a pattern that stopped matching fails here
+# before it can let a real workflow through.
+set -euo pipefail
+
+on_key='^("on"|'"'"'on'"'"'|on)[ \t]*:'
+
+# The workflow's `on:` block, comments removed. Fails when the file has none, so a
+# workflow whose triggers cannot be read is refused, never assumed safe.
+triggers() {
+  awk -v key="$on_key" '
+    $0 ~ key                  { in_on = 1; found = 1 }
+    !($0 ~ key) && /^[^ \t#]/ { in_on = 0 }
+    in_on                     { sub(/[ \t]*#.*/, ""); print }
+    END                       { exit !found }
+  ' "$1"
+}
+
+labels=(
+  "a secret"
+  "the publish route"
+  "a registry login"
+  "an image push"
+)
+patterns=(
+  '\bsecrets\b'
+  'harbor'
+  'login-action|\b(docker|podman|buildah|skopeo|oras|crane|regctl|cosign|helm)\b.*\blogin\b'
+  'build-push-action|--push\b|\bpush:[ \t]*true|\b(docker|podman|buildah|skopeo|oras|crane|regctl)\b.*\bpush\b|\b(mise|tasks/).*\b(publish|promote-stable)\b'
+)
+
+# Prints every offence in the pull-request workflows under a directory; fails if any.
+scan() {
+  local dir=$1 file trig hit i bad=0
+  for file in "$dir"/*.yaml "$dir"/*.yml; do
+    [ -e "$file" ] || continue
+    if ! trig=$(triggers "$file"); then
+      echo "test-workflows: $file: no \`on:\` block to read its triggers from" >&2
+      bad=1
+      continue
+    fi
+    grep -Eq 'pull_request' <<<"$trig" || continue
+    for i in "${!patterns[@]}"; do
+      while IFS= read -r hit; do
+        echo "test-workflows: $file:$hit  <- a pull-request workflow names ${labels[$i]}" >&2
+        bad=1
+      done < <(grep -Ein -e "${patterns[$i]}" "$file" || true)
+    done
+  done
+  return "$bad"
+}
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+case_n=0
+# fixture <pass|fail> <what>, the workflow on stdin: the scan must pass or fail on it.
+fixture() {
+  local want=$1 what=$2 dir got
+  dir="$scratch/$((++case_n))"
+  mkdir -p "$dir"
+  cat > "$dir/w.yaml"
+  if scan "$dir" 2>/dev/null; then got=pass; else got=fail; fi
+  [ "$got" = "$want" ] || { echo "test-workflows: $what: scan gave $got, expected $want" >&2; exit 1; }
+}
+
+{
+  fixture pass "a pull-request workflow with nothing in it" <<'YAML'
+name: v
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: mise run verify
+YAML
+  fixture pass "a release workflow may hold secrets, the route and a push" <<'YAML'
+name: release
+on:
+  workflow_dispatch:
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bde-dev/harbor-route@v1
+        with:
+          password: ${{ secrets.HARBOR_ROBOT_SECRET }}
+      - uses: docker/build-push-action@v7
+        with:
+          push: true
+YAML
+  fixture pass "a comment in the on block is not a trigger" <<'YAML'
+on:
+  # not pull_request: releases are by hand
+  workflow_dispatch:
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.X }}
+YAML
+
+  fixture fail "a secret in an expression" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret by index" <<'YAML'
+on: pull_request
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets['TOKEN'] }}
+YAML
+  fixture fail "every secret inherited by a called workflow" <<'YAML'
+on: [push, pull_request]
+jobs:
+  v:
+    uses: ./.github/workflows/other.yaml
+    secrets: inherit
+YAML
+  fixture fail "a secret under pull_request_target" <<'YAML'
+on:
+  pull_request_target:
+    types: [opened]
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret under a quoted on key" <<'YAML'
+"on":
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "a secret in a flow-style on" <<'YAML'
+on: { pull_request: { branches: [main] } }
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ secrets.TOKEN }}
+YAML
+  fixture fail "the route action" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bde-dev/harbor-route@v1
+YAML
+  fixture fail "the push hostname" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cloudflared access tcp --hostname harbor-push.example.test
+YAML
+  fixture fail "a login action" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v4
+YAML
+  fixture fail "a login command" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker login registry.example.test
+YAML
+  fixture fail "a push command" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker push registry.example.test/img:1
+YAML
+  fixture fail "a push by build action" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/build-push-action@v7
+        with:
+          push: true
+YAML
+  fixture fail "the publish task" <<'YAML'
+on:
+  pull_request:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run publish base patch
+YAML
+  fixture fail "a workflow whose triggers cannot be read" <<'YAML'
+name: no triggers
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+YAML
+}
+
+scan "${1:-.github/workflows}"
+echo "test-workflows: ok"
