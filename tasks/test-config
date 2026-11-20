@@ -3,11 +3,14 @@
 # Hermetic: a throwaway MISE_CONFIG_DIR keeps the host's global mise config (and its
 # tools) out of the resolution, so only the image's own mise.toml + mise.lock is tested.
 # The scratch dir lives on disk, not /tmp: the SDK extractions run to gigabytes and a
-# tmpfs /tmp fills up. It is removed on exit, pass or fail.
+# tmpfs /tmp fills up. It is removed on exit, pass or fail. The cache directory is created
+# first: a fresh machine, a CI runner among them, has none.
 set -euo pipefail
 images=("$@")
 [ ${#images[@]} -gt 0 ] || mapfile -t images < <(scripts/images)
-scratch="$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}" devcontainer-images-test.XXXXXX)"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+mkdir -p "$cache"
+scratch="$(mktemp -d -p "$cache" devcontainer-images-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT
 for d in "${images[@]}"; do
   echo "== resolving $d/mise.toml =="
