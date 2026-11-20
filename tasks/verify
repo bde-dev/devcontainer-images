@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 #MISE description="Rungs 1-2: full local loop for every image"
-#MISE depends=["test-version", "test-release", "test-pins", "test-config", "test-base", "test-dotnet"]
+#MISE depends=["test-version", "test-release", "test-pins", "test-workflows", "test-config", "test-base", "test-dotnet"]
 echo "verify: all rungs passed"

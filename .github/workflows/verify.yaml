@@ -1,0 +1,48 @@
+name: verify
+
+# Every pull request against main runs the whole verification ladder, the same
+# `mise run verify` that ends the local loop. The job is a required check on main, and a
+# required check has to report on every pull request, so the trigger has no path filter
+# and the job has no condition that could skip it.
+#
+# A pull request runs code its author wrote, so this workflow holds a read-only token and
+# nothing else: no credential, no registry login, nothing that can publish an image. The
+# ladder builds each image from the working tree, a flavour on the base built beside it,
+# and needs nothing from a registry that asks who you are. `mise run test-workflows` fails
+# the ladder when any workflow with a pull request trigger reaches for any of those.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The job's name is the name of the required check; changing it detaches the check.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The repository's own mise config is the code under test, so it is trusted here.
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+      # Resolving every pinned tool calls the GitHub API, which allows 60 anonymous
+      # requests an hour; the run's read-only token lifts that.
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # mise runs the ladder. The images' tools install inside each rung, so nothing is
+      # installed or cached here.
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+
+      - run: mise run verify

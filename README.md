@@ -13,6 +13,7 @@ config never bakes in; it lands at devpod start-up via the dotfiles hook.
 - `dotnet/` — .NET flavour, built on the base version its Dockerfile pins in `ARG BASE`; pins the .NET 8 and 10 SDKs
 - `tasks/` — build, test and publish entry points, run via `mise run <task>`
 - `scripts/` — the release logic the tasks and CI share: which images changed, which version comes next
+- `.github/workflows/verify.yaml` — CI check: the verification ladder on every pull request
 - `.github/workflows/build.yaml` — CI release
 - `renovate.json` — version-bump PRs for the pins
 - `.devcontainer/` — the devpod this repo is worked from
@@ -28,7 +29,8 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
   `mise.toml` against the lockfile, so a bad pin fails before any image is built.
   `test-version` and `test-release` check the release logic: the version a release would
   pick, and which images a release covers. `test-pins` checks that every image names the
-  version of what it is built on.
+  version of what it is built on. `test-workflows` checks that no workflow triggered by a
+  pull request can reach a secret, a registry login or the publish route (see Pull requests).
 - **Rung 2, local images:** `build-base` and `build-dotnet` build `devcontainer-base:local`
   and `devcontainer-dotnet:local`; `test-base` and `test-dotnet` run each image as the
   `vscode` user and assert the belt and SDKs are present and runnable. Here a flavour is
@@ -36,6 +38,27 @@ The tasks are rungs of one verification ladder. `mise tasks` lists them.
   tried against every flavour before either is released.
 - `verify` runs the whole ladder.
 - **Rung 3, publish:** see Publishing below.
+
+## Pull requests
+
+`verify.yaml` runs `mise run verify`, the whole ladder above, on every pull request
+against `main`, on a GitHub-hosted runner, as one job named `verify`. That job is the check
+to require on `main`: a pin that does not resolve, an image that does not build or a belt
+tool that does not run turns it red before the change can merge. A required check has to
+report on every pull request, so the workflow has no path filter and the job no condition
+that could skip it. A change that touches no image still runs the ladder, because the ladder
+also covers the release scripts and the workflows.
+
+The ladder needs nothing from the registry. A flavour is built on the base built from the
+same tree, not on the version it pins, and every other layer comes from a public image.
+
+A pull request runs code its author wrote, so a workflow it triggers holds a read-only
+token and nothing else: no secret, no registry login, no route to the registry, nothing that
+pushes an image. `test-workflows` enforces that on every `verify`: it reads each workflow's
+`on:` block and, for any with a `pull_request` or `pull_request_target` trigger, fails on a
+line that names a secret, the publish route, a registry login or an image push. It reads
+text, so a comment that names one fails as well, and a workflow whose triggers it cannot
+find is refused. The checker is itself tried against fixture workflows on every run.
 
 ## Publishing
 
