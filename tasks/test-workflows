@@ -8,7 +8,10 @@
 # trigger this reader does not understand is treated as reachable, never as safe: any
 # `pull_request` variant, `issue_comment`, `workflow_run`, `merge_group`, `push`, and any
 # `on:` shape it cannot classify with certainty. A write token matters because it can cut a
-# release or push a tag without naming a secret.
+# release or push a tag without naming a secret, so a scanned workflow also has to declare a
+# top-level `permissions:` key: without one the token falls back to the repository default,
+# which can be write. A job-level `permissions:` alone does not count, because the other
+# jobs would still take the default.
 #
 # It reads text, so a comment that names one of these fails too: better a reworded comment
 # than a credential that slipped past a parser. The checker is tried first on fixtures, so a
@@ -88,6 +91,32 @@ classify() {
   ' "$1"
 }
 
+# Succeeds when the workflow declares a top-level `permissions:` key with a value: on the
+# key's line (`read-all`, `{}`, a flow mapping) or indented beneath it.
+declares_permissions() {
+  awk '
+    { sub(/\r$/, ""); lines[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (lines[i] !~ /^["'"'"']?permissions["'"'"']?[ \t]*:/) continue
+        rest = lines[i]
+        sub(/^["'"'"']?permissions["'"'"']?[ \t]*:/, "", rest)
+        sub(/(^|[ \t])#.*/, "", rest)
+        gsub(/[ \t]/, "", rest)
+        if (rest != "") exit 0
+        for (j = i + 1; j <= NR; j++) {
+          l = lines[j]
+          sub(/(^|[ \t])#.*/, "", l)
+          if (l ~ /^[ \t]*$/) continue
+          exit (l ~ /^[ \t]/ ? 0 : 1)
+        }
+        exit 1
+      }
+      exit 1
+    }
+  ' "$1"
+}
+
 labels=(
   "a secret"
   "the publish route"
@@ -115,6 +144,10 @@ scan() {
       continue
     fi
     [ "$verdict" = safe ] && continue
+    if ! declares_permissions "$file"; then
+      echo "test-workflows: $file: a workflow a pull request may be able to trigger has no top-level \`permissions:\` key, so its token would fall back to the repository default" >&2
+      bad=1
+    fi
     for i in "${!patterns[@]}"; do
       while IFS= read -r hit; do
         echo "test-workflows: $file:$hit  <- a workflow a pull request may be able to trigger names ${labels[$i]}" >&2
@@ -139,9 +172,9 @@ fixture() {
 }
 
 # shellcheck disable=SC2016 # the `${{ }}` below is workflow text, not a shell expansion
-jobs_clean='jobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
+jobs_clean='permissions:\n  contents: read\njobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n'
 # shellcheck disable=SC2016
-jobs_secret='jobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.TOKEN }}\n'
+jobs_secret='permissions:\n  contents: read\njobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.TOKEN }}\n'
 # shape <what> <on block> [<the shape holding release triggers> [<the same, unconfirmable>]]
 # The text is printf %b, so `\n`, `\t` and `\r` write the characters. A <what> that starts
 # with CRLF writes the whole file with CRLF line ends.
@@ -323,6 +356,7 @@ on:
   workflow_run:
     workflows: [verify]
     types: [completed]
+permissions: read-all
 jobs:
   r:
     runs-on: ubuntu-latest
@@ -332,6 +366,7 @@ YAML
   fixture pass "a merge_group workflow with nothing in it" <<'YAML'
 on:
   merge_group:
+permissions: {}
 jobs:
   r:
     runs-on: ubuntu-latest
@@ -340,6 +375,8 @@ jobs:
 YAML
   fixture pass "an issue_comment workflow with nothing in it" <<'YAML'
 on: issue_comment
+permissions:
+  contents: read
 jobs:
   r:
     runs-on: ubuntu-latest
@@ -498,6 +535,72 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+
+  # The token of a workflow with no top-level permissions falls back to the repository default.
+  fixture fail "a pull-request workflow with no permissions key" <<'YAML'
+on: pull_request
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture fail "a pull-request workflow with permissions on its job only" <<'YAML'
+on: pull_request
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: echo hi
+YAML
+  fixture fail "a pull-request workflow with an empty permissions key" <<'YAML'
+on: pull_request
+permissions:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture pass "a pull-request workflow with top-level read permissions" <<'YAML'
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture pass "a pull-request workflow with permissions {}" <<'YAML'
+on: pull_request
+permissions: {}
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture pass "a pull-request workflow with permissions read-all" <<'YAML'
+on: pull_request
+permissions: read-all
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+YAML
+  fixture pass "a release workflow needs no permissions key" <<'YAML'
+on:
+  workflow_dispatch:
 jobs:
   r:
     runs-on: ubuntu-latest

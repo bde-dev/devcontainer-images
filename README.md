@@ -66,7 +66,10 @@ events a pull request cannot fire. Every other workflow is scanned, whether it n
 `pull_request` or one of its variants, `issue_comment`, `workflow_run`, `merge_group`, `push`
 or a trigger the reader cannot classify, and fails on a line that names a secret, the
 publish route, a registry login, an image push or a write token (a write token can cut a
-release or push a tag without naming a secret). It reads text, so a comment that names one
+release or push a tag without naming a secret). A scanned workflow also has to declare a
+top-level `permissions:` key (`read-all`, `{}` or a read-only list): without one its token
+falls back to the repository default, which can be write, and a `permissions:` on a job alone
+leaves the other jobs on that default. It reads text, so a comment that names one of these
 fails as well, and a workflow with no single `on:` key is refused. The checker is itself
 tried against fixture workflows of every `on:` shape on every run.
 
